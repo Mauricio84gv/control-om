@@ -9,6 +9,9 @@ from streamlit_gsheets import GSheetsConnection
 # 1. Configuración de pantalla en modo ancho
 st.set_page_config(page_title="Control O&M Semanal", layout="wide")
 
+# ENLACE DIRECTO DE TU HOJA DE GOOGLE
+URL_HOJA_DIRECTA = "https://docs.google.com/spreadsheets/d/1veXDuDIPG7KhUM3drp034Y7NfdY-3I0NyAqhRtRiFt4/edit"
+
 # INYECCIÓN CSS AVANZADA: ELIMINAR BARRA DE DESARROLLO COMPLETAMENTE
 st.markdown("""
     <style>
@@ -29,18 +32,24 @@ if st.session_state.mostrar_globos:
     st.balloons()
     st.session_state.mostrar_globos = False
 
-# CONEXIÓN DIRECTA A GOOGLE SHEETS
+# CONEXIÓN A GOOGLE SHEETS
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception:
     conn = None
+
+# CONTROL DE RUTA
+try:
+    ruta_hoja = st.secrets["connections"]["gsheets"]["spreadsheet"]
+except Exception:
+    ruta_hoja = URL_HOJA_DIRECTA
 
 # ACCESO DIRECTO DE ADMINISTRACIÓN
 with st.expander("🛠️ Panel de Acceso - Administrador (Dar clic aquí para cargar Excel)"):
     clave_directa = st.text_input("Introduce la clave de acceso de O&M", type="password", key="clave_main")
     
     if clave_directa == "admin123":
-        st.success("👨‍💻 Modo Administrador Activo")
+        st.success("👨‍💻 Modo Administrator Activo")
         st.write("---")
         st.subheader("Cargar Nueva Semana Activa")
         nuevo_excel_main = st.file_uploader("Subir archivo Excel (.xlsx)", type=["xlsx"], key="uploader_main")
@@ -48,7 +57,7 @@ with st.expander("🛠️ Panel de Acceso - Administrador (Dar clic aquí para c
         if nuevo_excel_main is not None and conn is not None:
             if st.button("🔄 Inicializar Nueva Semana", use_container_width=True):
                 try:
-                    # Guardar temporalmente la plantilla original para la estructura de estilos
+                    # Guardar la plantilla limpia en el servidor
                     with open("plantilla_original.xlsx", "wb") as f:
                         f.write(nuevo_excel_main.getbuffer())
 
@@ -72,10 +81,10 @@ with st.expander("🛠️ Panel de Acceso - Administrador (Dar clic aquí para c
                     df_c = df_c[~df_c["SITIO"].str.contains("Total", na=False, case=False)]
                     df_c.loc[df_c["Se realizó (Si/No)"] == "", "Se realizó (Si/No)"] = "Pendiente"
                     
-                    # ENVIAR LOS DATOS A GOOGLE SHEETS PARA SIEMPRE
-                    conn.update(spreadsheet=st.secrets["connections"]["gsheets"]["spreadsheet"], data=df_c)
+                    # Guardar datos en la nube de Google
+                    conn.update(spreadsheet=ruta_hoja, data=df_c)
                     st.success("¡Estructura oficial guardada en Google Sheets con éxito!")
-                    st.rerun()
+                    st.rerun() 
                 except Exception as e:
                     st.error(f"Error al procesar: {e}")
     elif clave_directa != "":
@@ -84,73 +93,85 @@ with st.expander("🛠️ Panel de Acceso - Administrador (Dar clic aquí para c
 st.write("---")
 st.title("📊 RIR/RDA Status Tracker - O&M")
 
-# LEER DATOS DESDE GOOGLE SHEETS
+# LEER DATOS DESDE GOOGLE SHEETS DE FORMA SEGURA
+df_actual = pd.DataFrame()
 if conn is not None:
     try:
-        df_actual = conn.read(spreadsheet=st.secrets["connections"]["gsheets"]["spreadsheet"], ttl=0).fillna("")
-        
-        if not df_actual.empty and "SITIO" in df_actual.columns:
-            num_sem = df_actual['SEMANA'].iloc[0] if 'SEMANA' in df_actual.columns else ""
-            st.subheader(f"📋 Sitios Activos - Semana {num_sem}")
-            
-            df_editado = st.data_editor(
-                df_actual,
-                column_config={
-                    "Se realizó (Si/No)": st.column_config.SelectboxColumn("Se realizó (Si/No)", options=["Pendiente", "Si", "No", "Cancelado"], required=True),
-                    "Si no se realizó detallar el por qué.": st.column_config.TextColumn("Si no se realizó detallar el por qué.", width="large")
-                },
-                disabled=[c for c in df_actual.columns if c not in ["Se realizó (Si/No)", "Si no se realizó detallar el por qué."]],
-                hide_index=True, use_container_width=True
-            )
-
-            if st.button("💾 Guardar Mis Cambios del Día", use_container_width=True):
-                # ACTUALIZAR EN LA NUBE
-                conn.update(spreadsheet=st.secrets["connections"]["gsheets"]["spreadsheet"], data=df_editado)
-                st.session_state.mostrar_globos = True
-                st.rerun()
-
-            st.write("---")
-            total = len(df_editado)
-            hechos = len(df_editado[df_editado["Se realizó (Si/No)"] == "Si"])
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.write(f"**Avance del Equipo:** {hechos} de {total} completados.")
-                st.progress(hechos / total if total > 0 else 0.0)
-            with col2:
-                if os.path.exists("plantilla_original.xlsx") and st.button(f"📥 Descargar Reporte Semana {num_sem} (.xlsx)", use_container_width=True):
-                    try:
-                        wb = openpyxl.load_workbook("plantilla_original.xlsx")
-                        ws = wb.active
-                        idx_s, fila_t = None, None
-                        for r in range(1, 15):
-                            vals = [str(ws.cell(row=r, column=c).value).strip().upper() for c in range(1, ws.max_column + 1)]
-                            if any("SITIO" in v or "SEMANA" in v for v in vals):
-                                fila_t = r
-                                for c in range(1, ws.max_column + 1):
-                                    if "SITIO" in str(ws.cell(row=r, column=c).value).strip().upper(): idx_s = c
-                                break
-                        if idx_s:
-                            map_r = dict(zip(df_editado["SITIO"], df_editado["Se realizó (Si/No)"]))
-                            map_j = dict(zip(df_editado["SITIO"], df_editado["Si no se realizó detallar el por qué."]))
-                            borde = Border(left=Side(style='thin', color='000000'), right=Side(style='thin', color='000000'), top=Side(style='thin', color='000000'), bottom=Side(style='thin', color='000000'))
-                            
-                            for f in range(fila_t + 1, ws.max_row + 1):
-                                val_s = ws.cell(row=f, column=idx_s).value
-                                if val_s and str(val_s).strip() in map_r:
-                                    cod_s = str(val_s).strip()
-                                    c_r = ws.cell(row=f, column=8, value=map_r[cod_s])
-                                    c_j = ws.cell(row=f, column=9, value=map_j[cod_s])
-                                    c_r.border, c_j.border = borde, borde
-                                    c_r.alignment = Alignment(horizontal="center", vertical="center")
-                                    c_j.alignment = Alignment(horizontal="left", vertical="center")
-                            
-                            buf = io.BytesIO()
-                            wb.save(buf)
-                            st.download_button(label="Confirmar Descarga", data=buf.getvalue(), file_name=f"Reporte_O&M_Semana_{num_sem}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                    except Exception as ex:
-                        st.error(f"Error al clonar formatos: {ex}")
+        df_actual = conn.read(spreadsheet=ruta_hoja, ttl=0).fillna("")
     except Exception:
-        st.warning("⏳ Conectando base de datos permanente o esperando datos iniciales...")
+        df_actual = pd.DataFrame()
+
+# MOSTRAR INTERFAZ SI HAY DATOS, SINO QUEDAR EN ESPERA
+if not df_actual.empty and "SITIO" in df_actual.columns:
+    try:
+        num_sem = df_actual['SEMANA'].iloc[0] if 'SEMANA' in df_actual.columns else ""
+        st.subheader(f"📋 Sitios Activos - Semana {num_sem}")
+        
+        df_editado = st.data_editor(
+            df_actual,
+            column_config={
+                "Se realizó (Si/No)": st.column_config.SelectboxColumn("Se realizó (Si/No)", options=["Pendiente", "Si", "No", "Cancelado"], required=True),
+                "Si no se realizó detallar el por qué.": st.column_config.TextColumn("Si no se realizó detallar el por qué.", width="large")
+            },
+            disabled=[c for c in df_actual.columns if c not in ["Se realizó (Si/No)", "Si no se realizó detallar el por qué."]],
+            hide_index=True, use_container_width=True
+        )
+
+        if st.button("💾 Guardar Mis Cambios del Día", use_container_width=True):
+            conn.update(spreadsheet=ruta_hoja, data=df_editado)
+            st.session_state.mostrar_globos = True
+            st.rerun()
+
+        st.write("---")
+        total = len(df_editado)
+        hechos = len(df_editado[df_editado["Se realizó (Si/No)"] == "Si"])
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.write(f"**Avance del Equipo:** {hechos} de {total} completados.")
+            st.progress(hechos / total if total > 0 else 0.0)
+        with col2:
+            if os.path.exists("plantilla_original.xlsx"):
+                try:
+                    wb = openpyxl.load_workbook("plantilla_original.xlsx")
+                    ws = wb.active
+                    idx_s, fila_t = None, None
+                    for r in range(1, 15):
+                        vals = [str(ws.cell(row=r, column=c).value).strip().upper() for c in range(1, ws.max_column + 1)]
+                        if any("SITIO" in v or "SEMANA" in v for v in vals):
+                            fila_t = r
+                            for c in range(1, ws.max_column + 1):
+                                if "SITIO" in str(ws.cell(row=r, column=c).value).strip().upper(): idx_s = c
+                            break
+                    
+                    if idx_s:
+                        map_r = dict(zip(df_editado["SITIO"], df_editado["Se realizó (Si/No)"]))
+                        map_j = dict(zip(df_editado["SITIO"], df_editado["Si no se realizó detallar el por qué."]))
+                        borde = Border(left=Side(style='thin', color='000000'), right=Side(style='thin', color='000000'), top=Side(style='thin', color='000000'), bottom=Side(style='thin', color='000000'))
+                        
+                        for f in range(fila_t + 1, ws.max_row + 1):
+                            val_s = ws.cell(row=f, column=idx_s).value
+                            if val_s and str(val_s).strip() in map_r:
+                                cod_s = str(val_s).strip()
+                                c_r = ws.cell(row=f, column=8, value=map_r[cod_s])
+                                c_j = ws.cell(row=f, column=9, value=map_j[cod_s])
+                                c_r.border, c_j.border = borde, borde
+                                c_r.alignment = Alignment(horizontal="center", vertical="center")
+                                c_j.alignment = Alignment(horizontal="left", vertical="center")
+                        
+                        buf = io.BytesIO()
+                        wb.save(buf)
+                        
+                        st.download_button(
+                            label=f"📥 Descargar Reporte Semana {num_sem} (.xlsx)", 
+                            data=buf.getvalue(), 
+                            file_name=f"Reporte_O&M_Semana_{num_sem}.xlsx", 
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                            use_container_width=True
+                        )
+                except Exception as ex:
+                    st.error(f"Error al preparar la descarga: {ex}")
+    except Exception as e:
+        st.error(f"Error en la lectura de datos: {e}")
 else:
-    st.info("Por favor configura las credenciales de Google Sheets en Streamlit Cloud.")
+    st.warning("⏳ Conectando base de datos permanente o esperando que el administrador cargue los datos iniciales...")
